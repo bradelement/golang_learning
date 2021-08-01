@@ -1,24 +1,55 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"fmt"
-	"github.com/pkg/errors"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"golang.org/x/sync/errgroup"
 )
 
 func main() {
-	err1 := errors.Wrapf(mockDaoError1(), "dao error1")
-	fmt.Printf("%+v", err1)
-	fmt.Println(errors.Unwrap(err1))
+	root, cancel := context.WithCancel(context.Background())
+	g, ctx := errgroup.WithContext(root)
 
-	err2 := errors.Wrapf(mockDaoError2(), "dao error2")
-	fmt.Println(err2)
-}
+	// server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/hello", func(writer http.ResponseWriter, request *http.Request) {
+		fmt.Fprint(writer, "hello world")
+	})
+	server := &http.Server{
+		Addr:    ":8080",
+		Handler: mux,
+	}
 
-func mockDaoError1() error {
-	return sql.ErrNoRows
-}
+	// start web server
+	g.Go(func() error {
+		return server.ListenAndServe()
+	})
+	g.Go(func() error {
+		<-ctx.Done()
+		return server.Shutdown(ctx)
+	})
 
-func mockDaoError2() error {
-	return sql.ErrNoRows
+	// deal signal
+	g.Go(func() error {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGINT)
+
+		select {
+		case sig := <-ch:
+			fmt.Printf("receive signal: %+v", sig)
+			cancel()
+			return nil
+		case <-ctx.Done():
+			fmt.Printf("receive global done")
+			return ctx.Err()
+		}
+	})
+
+	err := g.Wait()
+	fmt.Printf("g wait error: %+v", err)
 }
